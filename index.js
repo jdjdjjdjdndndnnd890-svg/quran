@@ -1,8 +1,5 @@
 const ffmpegPath = require('ffmpeg-static');
-process.env.FFMPEG_PATH = ffmpegPath;
-
-const https = require('https');
-const http = require('http');
+const { spawn } = require('child_process');
 
 const { 
     Client, GatewayIntentBits, SlashCommandBuilder, ActionRowBuilder, 
@@ -23,7 +20,7 @@ const client = new Client({
     ]
 });
 
-// قائمة القراء المتاحين للبحث
+// قائمة القراء
 const reciters = [
     { id: 'afs', name: 'مشاري العفاسي', keywords: ['عفاسي', 'مشاري'], url: 'https://server8.mp3quran.net/afs/' },
     { id: 'dosr', name: 'ياسر الدوسري', keywords: ['دوسري', 'ياسر'], url: 'https://server11.mp3quran.net/dosr/' },
@@ -35,7 +32,7 @@ const reciters = [
     { id: 'maher', name: 'ماهر المعيقلي', keywords: ['معيقلي', 'ماهر'], url: 'https://server12.mp3quran.net/maher/' }
 ];
 
-// أسماء السور (114 سورة)
+// قائمة أسماء السور (114)
 const surahNames = [
     "الفاتحة", "البقرة", "آل عمران", "النساء", "المائدة", "الأنعام", "الأعراف", "الأنفال", "التوبة", "يونس",
     "هود", "يوسف", "الرعد", "إبراهيم", "الحجر", "النحل", "الإسراء", "الكهف", "مريم", "طه",
@@ -51,12 +48,19 @@ const surahNames = [
     "المسد", "الإخلاص", "الفلق", "الناس"
 ];
 
-let currentSurahIndex = 1;
-let currentReciter = reciters[0];
+// متغيرات التتبع والختمة
+let mainSurahIndex = 1;        // السورة الحالية في الختمة الافتراضية
+let mainReciter = reciters[0];  // القارئ الافتراضي للختمة
+
+let isCustomRequest = false;    // هل شغال سورة بطلب خاص الآن؟
+let customSurahIndex = null;
+let customReciter = null;
+
 let volume = 1.0;
 let connection = null;
 const player = createAudioPlayer();
 let currentResource = null;
+let currentFFmpegProcess = null;
 let panelMessageData = { channelId: null, messageId: null };
 
 function getSurahUrl(surahIndex, reciter) {
@@ -64,34 +68,42 @@ function getSurahUrl(surahIndex, reciter) {
     return `${reciter.url}${formattedIndex}.mp3`;
 }
 
-// دالة جلب الصوت المباشر مع دعم التوجيه (Redirects)
-function getAudioStream(url, callback) {
-    const clientReq = url.startsWith('https') ? https : http;
-    clientReq.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            return getAudioStream(res.headers.location, callback);
-        }
-        callback(res);
-    }).on('error', (err) => {
-        console.error("خطأ في جلب ملف الصوت:", err.message);
-    });
-}
+function playSurahStream(surahIndex, reciter) {
+    const url = getSurahUrl(surahIndex, reciter);
 
-// تشغيل السورة عبر Stream دقيق
-function playSurah(index) {
-    currentSurahIndex = index;
-    const url = getSurahUrl(currentSurahIndex, currentReciter);
+    if (currentFFmpegProcess) {
+        try {
+            currentFFmpegProcess.kill('SIGKILL');
+        } catch (e) {}
+        currentFFmpegProcess = null;
+    }
 
-    getAudioStream(url, (stream) => {
-        currentResource = createAudioResource(stream, { 
-            inputType: StreamType.Arbitrary,
-            inlineVolume: true 
-        });
-        if (currentResource.volume) {
-            currentResource.volume.setVolume(volume);
-        }
-        player.play(currentResource);
+    currentFFmpegProcess = spawn(ffmpegPath, [
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5',
+        '-i', url,
+        '-f', 's16le',
+        '-ar', '48000',
+        '-ac', '2',
+        '-loglevel', 'error',
+        'pipe:1'
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+    currentFFmpegProcess.on('error', (err) => {
+        console.error('خطأ في FFmpeg:', err.message);
     });
+
+    currentResource = createAudioResource(currentFFmpegProcess.stdout, { 
+        inputType: StreamType.Raw,
+        inlineVolume: true 
+    });
+
+    if (currentResource.volume) {
+        currentResource.volume.setVolume(volume);
+    }
+
+    player.play(currentResource);
 }
 
 function normalizeText(text) {
@@ -104,14 +116,17 @@ function normalizeText(text) {
         .trim();
 }
 
-// تصميم البانل بدون قائمة منسدلة - أزرار رمادية بإيموجي فقط
 function createPanelEmbed() {
+    const currentIdx = isCustomRequest ? customSurahIndex : mainSurahIndex;
+    const currentRec = isCustomRequest ? customReciter : mainReciter;
+    const statusNote = isCustomRequest ? ' ⚠️ (طلب خاص - ستستأنف الختمة بعدها)' : ' 🔄 (ختمة مستمرة)';
+
     const embed = new EmbedBuilder()
         .setColor('#2b2d31')
         .setTitle('📖 إذاعة القرآن الكريم - 24/7')
         .addFields(
-            { name: '🎙️ القارئ الحالي', value: `**${currentReciter.name}**`, inline: true },
-            { name: '📜 السورة الشغالة', value: `**سورة ${surahNames[currentSurahIndex - 1]}** (${currentSurahIndex}/114)`, inline: true },
+            { name: '🎙️ القارئ الحالي', value: `**${currentRec.name}**`, inline: true },
+            { name: '📜 السورة الشغالة', value: `**سورة ${surahNames[currentIdx - 1]}** (${currentIdx}/114)${statusNote}`, inline: false },
             { name: '🔊 مستوى الصوت', value: `\`${Math.round(volume * 100)}%\``, inline: true }
         )
         .setFooter({ text: 'البوت يعمل باستمرار 24/7 بدون توقف' });
@@ -127,9 +142,19 @@ function createPanelEmbed() {
     return { embeds: [embed], components: [rowButtons] };
 }
 
+// لما السورة تخلص
 player.on(AudioPlayerStatus.Idle, () => {
-    currentSurahIndex = (currentSurahIndex % 114) + 1;
-    playSurah(currentSurahIndex);
+    if (isCustomRequest) {
+        // انتهى الطلب الخاص -> نرجع للختمة الافتراضية من المكان الموقوف عنده
+        isCustomRequest = false;
+        customSurahIndex = null;
+        customReciter = null;
+    } else {
+        // الختمة المستمرة تقدم سورة للأمام
+        mainSurahIndex = (mainSurahIndex % 114) + 1;
+    }
+
+    playSurahStream(mainSurahIndex, mainReciter);
     updatePanelMessage();
 });
 
@@ -187,20 +212,23 @@ client.on('interactionCreate', async (interaction) => {
         });
 
         try {
-            await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+            await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
         } catch (error) {
             console.error("فشل الاتصال بالروم الصوتية:", error);
         }
 
         connection.subscribe(player);
 
-        // إرسال البانل في الشات الخاص بالروم الصوتية نفسها
+        // إرسال البانل في شات الروم الصوتية
         const panelMsg = await voiceChannel.send(createPanelEmbed());
         panelMessageData = { channelId: voiceChannel.id, messageId: panelMsg.id };
 
-        playSurah(currentSurahIndex);
+        // البدء من سورة الفاتحة (1)
+        mainSurahIndex = 1;
+        isCustomRequest = false;
+        playSurahStream(mainSurahIndex, mainReciter);
 
-        return interaction.editReply({ content: `✅ تم ربط البوت بـ **${voiceChannel.name}** وإرسال البانل في شات الروم الصوتية بنجاح!` });
+        return interaction.editReply({ content: `✅ تم ربط البوت بـ **${voiceChannel.name}** وتمت بداية الختمة من سورة الفاتحة بنجاح!` });
     }
 
     if (interaction.isButton()) {
@@ -213,7 +241,7 @@ client.on('interactionCreate', async (interaction) => {
                 .setCustomId('surah_input')
                 .setLabel("اكتب اسم السورة أو رقمها واسم الشيخ")
                 .setStyle(TextInputStyle.Short)
-                .setPlaceholder("مثال: الرحمن بصوت ياسر الدوسري أو المنشاوي")
+                .setPlaceholder("مثال: الكهف بصوت ياسر الدوسري")
                 .setRequired(true);
 
             const row = new ActionRowBuilder().addComponents(surahInput);
@@ -224,12 +252,20 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferUpdate();
 
         if (interaction.customId === 'btn_next') {
-            currentSurahIndex = (currentSurahIndex % 114) + 1;
-            playSurah(currentSurahIndex);
+            if (isCustomRequest) {
+                isCustomRequest = false;
+            } else {
+                mainSurahIndex = (mainSurahIndex % 114) + 1;
+            }
+            playSurahStream(mainSurahIndex, mainReciter);
         } 
         else if (interaction.customId === 'btn_prev') {
-            currentSurahIndex = currentSurahIndex <= 1 ? 114 : currentSurahIndex - 1;
-            playSurah(currentSurahIndex);
+            if (isCustomRequest) {
+                isCustomRequest = false;
+            } else {
+                mainSurahIndex = mainSurahIndex <= 1 ? 114 : mainSurahIndex - 1;
+            }
+            playSurahStream(mainSurahIndex, mainReciter);
         } 
         else if (interaction.customId === 'btn_vol_up') {
             volume = Math.min(volume + 0.1, 2.0);
@@ -258,12 +294,8 @@ client.on('interactionCreate', async (interaction) => {
             if (matchedReciter) break;
         }
 
-        if (matchedReciter) {
-            currentReciter = matchedReciter;
-        }
-
         let cleanForSurah = normInput
-            .replace(/سوره|سوره|بصوت|صوت|الشيخ|قارئ|القارئ/g, '')
+            .replace(/سوره|سورة|بصوت|صوت|الشيخ|قارئ|القارئ/g, '')
             .trim();
 
         if (matchedReciter) {
@@ -291,22 +323,22 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        if (foundIndex === -1 && matchedReciter) {
-            foundIndex = currentSurahIndex;
-        }
+        if (foundIndex !== -1 || matchedReciter) {
+            isCustomRequest = true;
+            customSurahIndex = foundIndex !== -1 ? foundIndex : mainSurahIndex;
+            customReciter = matchedReciter || mainReciter;
 
-        if (foundIndex !== -1) {
-            playSurah(foundIndex);
+            playSurahStream(customSurahIndex, customReciter);
             await updatePanelMessage();
             await interaction.reply({ 
-                content: `▶️ جاري تشغيل سورة **${surahNames[foundIndex - 1]}** بصوت **${currentReciter.name}**`, 
+                content: `▶️ تم تشغيل سورة **${surahNames[customSurahIndex - 1]}** بصوت **${customReciter.name}** كطلب خاص. ستستأنف الختمة تلقائياً بعد انتهائها!`, 
                 ephemeral: true 
             });
         } else {
-            await interaction.reply({ content: `❌ لم يتم العثور على سورة باسم "${rawInput}"`, ephemeral: true });
+            await interaction.reply({ content: `❌ لم يتم العثور على سورة أو قارئ بهذا الاسم: "${rawInput}"`, ephemeral: true });
         }
     }
 });
 
 client.login(process.env.BOT_TOKEN);
-        
+    
