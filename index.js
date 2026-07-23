@@ -9,8 +9,14 @@ const {
 
 const { 
     joinVoiceChannel, createAudioPlayer, createAudioResource, 
-    AudioPlayerStatus, VoiceConnectionStatus, entersState, StreamType 
+    AudioPlayerStatus, VoiceConnectionStatus, entersState, StreamType,
+    generateDependencyReport
 } = require('@discordjs/voice');
+
+// طباعة تقرير المكتبات في اللوجز للتأكد أن التشفير شغال
+console.log("=== فحص مكتبات الصوت ===");
+console.log(generateDependencyReport());
+console.log("=======================");
 
 const client = new Client({
     intents: [
@@ -20,7 +26,7 @@ const client = new Client({
     ]
 });
 
-// قائمة القراء مع السيرفرات المباشرة الشغالة 100%
+// قائمة القراء
 const reciters = [
     { id: 'afs', name: 'مشاري العفاسي', keywords: ['عفاسي', 'مشاري'], url: 'https://server8.mp3quran.net/afs/' },
     { id: 'dosr', name: 'ياسر الدوسري', keywords: ['دوسري', 'ياسر'], url: 'https://server11.mp3quran.net/dosr/' },
@@ -48,7 +54,6 @@ const surahNames = [
     "المسد", "الإخلاص", "الفلق", "الناس"
 ];
 
-// متغيرات الختمة والطلبات
 let mainSurahIndex = 1;        
 let mainReciter = reciters[0];  
 
@@ -70,17 +75,14 @@ function getSurahUrl(surahIndex, reciter) {
 
 function playSurahStream(surahIndex, reciter) {
     const url = getSurahUrl(surahIndex, reciter);
-    console.log(`▶️ جاري تشغيل الرابط: ${url}`);
+    console.log(`▶️ جاري تشغيل: ${url}`);
 
     if (currentFFmpegProcess) {
-        try {
-            currentFFmpegProcess.kill('SIGKILL');
-        } catch (e) {}
+        try { currentFFmpegProcess.kill('SIGKILL'); } catch (e) {}
         currentFFmpegProcess = null;
     }
 
     currentFFmpegProcess = spawn(ffmpegPath, [
-        '-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n',
         '-reconnect', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '5',
@@ -89,12 +91,14 @@ function playSurahStream(surahIndex, reciter) {
         '-f', 's16le',
         '-ar', '48000',
         '-ac', '2',
-        '-loglevel', 'error',
         'pipe:1'
-    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-    currentFFmpegProcess.on('error', (err) => {
-        console.error('❌ خطأ في FFmpeg:', err.message);
+    currentFFmpegProcess.stderr.on('data', (data) => {
+        const errStr = data.toString();
+        if (errStr.includes('Error') || errStr.includes('HTTP')) {
+            console.error(`⚠️ FFmpeg Log: ${errStr.trim()}`);
+        }
     });
 
     currentResource = createAudioResource(currentFFmpegProcess.stdout, { 
@@ -142,12 +146,10 @@ function createPanelEmbed() {
 
 function handleSurahEnd() {
     if (isCustomRequest) {
-        // انتهى الطلب الخاص -> نرجع للختمة الافتراضية
         isCustomRequest = false;
         customSurahIndex = null;
         customReciter = null;
     } else {
-        // الختمة المستمرة تتقدم سورة
         mainSurahIndex = (mainSurahIndex % 114) + 1;
     }
 
@@ -162,7 +164,7 @@ player.on(AudioPlayerStatus.Idle, () => {
 });
 
 player.on('error', (error) => {
-    console.error('❌ خطأ في المشغل:', error.message);
+    console.error('❌ خطأ المشغل:', error.message);
 });
 
 async function updatePanelMessage() {
@@ -171,9 +173,7 @@ async function updatePanelMessage() {
         const channel = await client.channels.fetch(panelMessageData.channelId);
         const msg = await channel.messages.fetch(panelMessageData.messageId);
         await msg.edit(createPanelEmbed());
-    } catch (err) {
-        console.log("تعذر تحديث البانل:", err.message);
-    }
+    } catch (err) {}
 }
 
 client.on('ready', async () => {
@@ -216,11 +216,11 @@ client.on('interactionCreate', async (interaction) => {
 
         try {
             await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+            connection.subscribe(player);
+            console.log("✅ اتصل البوت بالروم الصوتية بنجاح!");
         } catch (error) {
-            console.error("فشل الاتصال بالروم الصوتية:", error);
+            console.error("❌ فشل الاتصال بالروم الصوتية:", error);
         }
-
-        connection.subscribe(player);
 
         const panelMsg = await voiceChannel.send(createPanelEmbed());
         panelMessageData = { channelId: voiceChannel.id, messageId: panelMsg.id };
@@ -341,4 +341,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.BOT_TOKEN);
-            
+                
