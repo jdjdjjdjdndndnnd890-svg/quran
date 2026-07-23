@@ -9,7 +9,7 @@ const {
 
 const { 
     joinVoiceChannel, createAudioPlayer, createAudioResource, 
-    AudioPlayerStatus, VoiceConnectionStatus, StreamType,
+    AudioPlayerStatus, VoiceConnectionStatus, entersState, StreamType,
     getVoiceConnection
 } = require('@discordjs/voice');
 
@@ -68,31 +68,35 @@ function getSurahUrl(surahIndex, reciter) {
 
 function playSurahStream(surahIndex, reciter) {
     const url = getSurahUrl(surahIndex, reciter);
-    console.log(`▶️ جاري تشغيل الرابط عبر OggOpus: ${url}`);
+    console.log(`▶️ جاري تشغيل الرابط: ${url}`);
 
     if (currentFFmpegProcess) {
         try { currentFFmpegProcess.kill('SIGKILL'); } catch (e) {}
         currentFFmpegProcess = null;
     }
 
-    // تشغيل FFmpeg مع التشفير المباشر لـ Opus لضمان خروج الصوت 100%
     currentFFmpegProcess = spawn(ffmpegPath, [
         '-reconnect', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '5',
-        '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         '-i', url,
         '-filter:a', `volume=${volume}`,
-        '-c:a', 'libopus',
-        '-b:a', '96k',
+        '-f', 's16le',
         '-ar', '48000',
         '-ac', '2',
-        '-f', 'ogg',
         'pipe:1'
-    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    currentFFmpegProcess.stderr.on('data', (data) => {
+        const msg = data.toString();
+        if (msg.includes('Error') || msg.includes('Failed')) {
+            console.error('⚠️ FFmpeg Log:', msg.trim());
+        }
+    });
 
     currentResource = createAudioResource(currentFFmpegProcess.stdout, { 
-        inputType: StreamType.OggOpus
+        inputType: StreamType.Raw
     });
 
     player.play(currentResource);
@@ -196,10 +200,9 @@ client.on('interactionCreate', async (interaction) => {
             } catch (e) {}
         }
 
-        // تنظيف أي اتصال قديم معلق
         const oldConn = getVoiceConnection(voiceChannel.guild.id);
         if (oldConn) {
-            oldConn.destroy();
+            try { oldConn.destroy(); } catch (e) {}
         }
 
         connection = joinVoiceChannel({
@@ -210,12 +213,18 @@ client.on('interactionCreate', async (interaction) => {
             selfMute: false
         });
 
-        // ربط المشغل فوراً
         connection.subscribe(player);
 
         connection.on('stateChange', (oldState, newState) => {
             console.log(`📡 حالة الاتصال: ${oldState.status} ➔ ${newState.status}`);
         });
+
+        try {
+            await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+            console.log("✅ الاتصال الصوتي مكتمل وجاهز 100%!");
+        } catch (error) {
+            console.log("⚠️ تعذر تأكيد الاتصال، جاري البدء المباشر...");
+        }
 
         const panelMsg = await voiceChannel.send(createPanelEmbed());
         panelMessageData = { channelId: voiceChannel.id, messageId: panelMsg.id };
@@ -224,7 +233,7 @@ client.on('interactionCreate', async (interaction) => {
         isCustomRequest = false;
         playSurahStream(mainSurahIndex, mainReciter);
 
-        return interaction.editReply({ content: `✅ تم ربط البوت بـ **${voiceChannel.name}** وبدأت الإذاعة مباشرة!` });
+        return interaction.editReply({ content: `✅ تم ربط البوت بـ **${voiceChannel.name}** وبدأت الإذاعة المباشرة!` });
     }
 
     if (interaction.isButton()) {
@@ -336,4 +345,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.BOT_TOKEN);
-                                              
+    
