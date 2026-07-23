@@ -1,8 +1,7 @@
-// تحديد مسار FFmpeg لضمان تشغيل الصوت على Railway و Linux
+// تحديد مسار FFmpeg الصريح لبيئة Railway
 const ffmpegPath = require('ffmpeg-static');
 process.env.FFMPEG_PATH = ffmpegPath;
 
-const https = require('https');
 const { 
     Client, GatewayIntentBits, SlashCommandBuilder, ActionRowBuilder, 
     ButtonBuilder, ButtonStyle, EmbedBuilder, ModalBuilder, TextInputBuilder, 
@@ -10,7 +9,7 @@ const {
 } = require('discord.js');
 const { 
     joinVoiceChannel, createAudioPlayer, createAudioResource, 
-    AudioPlayerStatus 
+    AudioPlayerStatus, VoiceConnectionStatus, entersState 
 } = require('@discordjs/voice');
 
 const client = new Client({
@@ -21,7 +20,7 @@ const client = new Client({
     ]
 });
 
-// قائمة القراء المتاحين
+// قائمة القراء
 const reciters = [
     { id: 'afs', name: 'مشاري العفاسي', keywords: ['عفاسي', 'مشاري'], url: 'https://server8.mp3quran.net/afs/' },
     { id: 'dosr', name: 'ياسر الدوسري', keywords: ['دوسري', 'ياسر'], url: 'https://server11.mp3quran.net/dosr/' },
@@ -62,32 +61,26 @@ function getSurahUrl(surahIndex, reciter) {
     return `${reciter.url}${formattedIndex}.mp3`;
 }
 
-// تشغيل السورة بأسلوب البث المباشر المضمون للصوت
 function playSurah(index) {
     currentSurahIndex = index;
     const url = getSurahUrl(currentSurahIndex, currentReciter);
     
-    https.get(url, (stream) => {
-        currentResource = createAudioResource(stream, { inlineVolume: true });
-        currentResource.volume.setVolume(volume);
-        player.play(currentResource);
-    }).on('error', (err) => {
-        console.error("خطأ في تشغيل رابط الصوت:", err.message);
-    });
+    currentResource = createAudioResource(url, { inlineVolume: true });
+    currentResource.volume.setVolume(volume);
+    
+    player.play(currentResource);
 }
 
-// تنظيف النصوص للبحث الدقيق
 function normalizeText(text) {
     return text
         .replace(/[أإآ]/g, 'ا')
         .replace(/ة/g, 'ه')
         .replace(/ى/g, 'ي')
-        .replace(/[\u064B-\u0652]/g, '') // إزالة التشكيل
+        .replace(/[\u064B-\u0652]/g, '')
         .toLowerCase()
         .trim();
 }
 
-// تصميم البانل الجديد (رمادي بالكامل + إيموجيات فقط)
 function createPanelEmbed() {
     const embed = new EmbedBuilder()
         .setColor('#2b2d31')
@@ -112,7 +105,6 @@ function createPanelEmbed() {
 
     const rowReciter = new ActionRowBuilder().addComponents(reciterSelect);
 
-    // صف الأزرار (كلها رمادية وبدون كلام - إيموجي فقط)
     const rowButtons = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('btn_prev').setEmoji('⏮️').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('btn_search').setEmoji('🔍').setStyle(ButtonStyle.Secondary),
@@ -159,7 +151,6 @@ client.on('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
 
-    // 1. أمر Setup
     if (interaction.isChatInputCommand() && interaction.commandName === 'setup-quran') {
         const voiceChannel = interaction.options.getChannel('channel');
         await interaction.deferReply({ ephemeral: true });
@@ -176,8 +167,16 @@ client.on('interactionCreate', async (interaction) => {
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
             adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-            selfDeaf: false
+            selfDeaf: false,
+            selfMute: false
         });
+
+        // الانتظار لحين اكتمال الاتصال بالروم الصوتية
+        try {
+            await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+        } catch (error) {
+            console.error("فشل الاتصال بالروم الصوتية:", error);
+        }
 
         connection.subscribe(player);
 
@@ -189,7 +188,6 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply({ content: `✅ تم ربط البوت بـ **${voiceChannel.name}** وإرسال البانل بنجاح!` });
     }
 
-    // 2. اختيار القارئ
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_reciter') {
         await interaction.deferUpdate();
         const selectedId = interaction.values[0];
@@ -202,7 +200,6 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // 3. أزرار التحكم
     if (interaction.isButton()) {
         if (interaction.customId === 'btn_search') {
             const modal = new ModalBuilder()
@@ -243,12 +240,10 @@ client.on('interactionCreate', async (interaction) => {
         await updatePanelMessage();
     }
 
-    // 4. معالجة البحث الذكي (Modal)
     if (interaction.isModalSubmit() && interaction.customId === 'search_modal') {
         let rawInput = interaction.fields.getTextInputValue('surah_input');
         let normInput = normalizeText(rawInput);
 
-        // أولاً: فحص إذا كان المستخدم ذكر اسم شيخ في البحث
         let matchedReciter = null;
         for (const rec of reciters) {
             for (const kw of rec.keywords) {
@@ -264,12 +259,10 @@ client.on('interactionCreate', async (interaction) => {
             currentReciter = matchedReciter;
         }
 
-        // ثانياً: تنظيف النص للبحث عن اسم السورة بالظبط
         let cleanForSurah = normInput
             .replace(/سوره|سوره|بصوت|صوت|الشيخ|قارئ|القارئ/g, '')
             .trim();
 
-        // إزالة اسم الشيخ من نص بحث السورة إن وجد
         if (matchedReciter) {
             matchedReciter.keywords.forEach(kw => {
                 cleanForSurah = cleanForSurah.replace(normalizeText(kw), '');
@@ -279,27 +272,22 @@ client.on('interactionCreate', async (interaction) => {
 
         let foundIndex = -1;
 
-        // البحث بالرقم
         const numberMatch = cleanForSurah.match(/\d+/);
         if (numberMatch) {
             const num = parseInt(numberMatch[0]);
             if (num >= 1 && num <= 114) foundIndex = num;
         }
 
-        // البحث بالاسم
         if (foundIndex === -1 && cleanForSurah.length > 0) {
-            // 1. بحث عن مطابقة تامة أولاً
             let exactIdx = surahNames.findIndex(s => normalizeText(s) === cleanForSurah);
             if (exactIdx !== -1) {
                 foundIndex = exactIdx + 1;
             } else {
-                // 2. بحث يحتوي على الكلمة
                 let partialIdx = surahNames.findIndex(s => normalizeText(s).includes(cleanForSurah) || cleanForSurah.includes(normalizeText(s)));
                 if (partialIdx !== -1) foundIndex = partialIdx + 1;
             }
         }
 
-        // لو ما لاقاش سورة محددة بس لقى شيخ، يشغل نفس السورة الحالية بالشيخ الجديد
         if (foundIndex === -1 && matchedReciter) {
             foundIndex = currentSurahIndex;
         }
@@ -318,4 +306,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.BOT_TOKEN);
-                                                               
+          
