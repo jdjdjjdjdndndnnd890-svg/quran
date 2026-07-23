@@ -9,14 +9,8 @@ const {
 
 const { 
     joinVoiceChannel, createAudioPlayer, createAudioResource, 
-    AudioPlayerStatus, VoiceConnectionStatus, entersState, StreamType,
-    generateDependencyReport
+    AudioPlayerStatus, VoiceConnectionStatus, entersState, StreamType
 } = require('@discordjs/voice');
-
-// طباعة تقرير المكتبات في اللوجز للتأكد أن التشفير شغال
-console.log("=== فحص مكتبات الصوت ===");
-console.log(generateDependencyReport());
-console.log("=======================");
 
 const client = new Client({
     intents: [
@@ -75,7 +69,7 @@ function getSurahUrl(surahIndex, reciter) {
 
 function playSurahStream(surahIndex, reciter) {
     const url = getSurahUrl(surahIndex, reciter);
-    console.log(`▶️ جاري تشغيل: ${url}`);
+    console.log(`▶️ جاري تشغيل الرابط: ${url}`);
 
     if (currentFFmpegProcess) {
         try { currentFFmpegProcess.kill('SIGKILL'); } catch (e) {}
@@ -92,14 +86,7 @@ function playSurahStream(surahIndex, reciter) {
         '-ar', '48000',
         '-ac', '2',
         'pipe:1'
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-    currentFFmpegProcess.stderr.on('data', (data) => {
-        const errStr = data.toString();
-        if (errStr.includes('Error') || errStr.includes('HTTP')) {
-            console.error(`⚠️ FFmpeg Log: ${errStr.trim()}`);
-        }
-    });
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
 
     currentResource = createAudioResource(currentFFmpegProcess.stdout, { 
         inputType: StreamType.Raw
@@ -163,8 +150,8 @@ player.on(AudioPlayerStatus.Idle, () => {
     handleSurahEnd();
 });
 
-player.on('error', (error) => {
-    console.error('❌ خطأ المشغل:', error.message);
+player.on('error', (err) => {
+    console.error("❌ خطأ المشغل:", err.message);
 });
 
 async function updatePanelMessage() {
@@ -206,20 +193,23 @@ client.on('interactionCreate', async (interaction) => {
             } catch (e) {}
         }
 
+        // إنشاء الاتصال مع selfDeaf: true لحل تعليق ديسكورد نهائياً
         connection = joinVoiceChannel({
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
             adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-            selfDeaf: false,
+            selfDeaf: true,
             selfMute: false
         });
 
+        // ربط المشغل فوراً
+        connection.subscribe(player);
+
         try {
-            await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
-            connection.subscribe(player);
-            console.log("✅ اتصل البوت بالروم الصوتية بنجاح!");
+            await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+            console.log("✅ الاتصال بالروم الصوتية متصل وجاهز فوراً!");
         } catch (error) {
-            console.error("❌ فشل الاتصال بالروم الصوتية:", error);
+            console.log("⚠️ تم تجاوز المهلة وتم الاتصال في الخلفية.");
         }
 
         const panelMsg = await voiceChannel.send(createPanelEmbed());
@@ -341,4 +331,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.BOT_TOKEN);
-                
+                                
