@@ -4,12 +4,13 @@ const { spawn } = require('child_process');
 const { 
     Client, GatewayIntentBits, SlashCommandBuilder, ActionRowBuilder, 
     ButtonBuilder, ButtonStyle, EmbedBuilder, ModalBuilder, TextInputBuilder, 
-    TextInputStyle, ChannelType 
+    TextInputStyle, ChannelType, MessageFlags
 } = require('discord.js');
 
 const { 
     joinVoiceChannel, createAudioPlayer, createAudioResource, 
-    AudioPlayerStatus, VoiceConnectionStatus, entersState, StreamType
+    AudioPlayerStatus, VoiceConnectionStatus, StreamType,
+    getVoiceConnection
 } = require('@discordjs/voice');
 
 const client = new Client({
@@ -20,7 +21,6 @@ const client = new Client({
     ]
 });
 
-// قائمة القراء
 const reciters = [
     { id: 'afs', name: 'مشاري العفاسي', keywords: ['عفاسي', 'مشاري'], url: 'https://server8.mp3quran.net/afs/' },
     { id: 'dosr', name: 'ياسر الدوسري', keywords: ['دوسري', 'ياسر'], url: 'https://server11.mp3quran.net/dosr/' },
@@ -32,7 +32,6 @@ const reciters = [
     { id: 'maher', name: 'ماهر المعيقلي', keywords: ['معيقلي', 'ماهر'], url: 'https://server12.mp3quran.net/maher/' }
 ];
 
-// أسماء السور (114)
 const surahNames = [
     "الفاتحة", "البقرة", "آل عمران", "النساء", "المائدة", "الأنعام", "الأعراف", "الأنفال", "التوبة", "يونس",
     "هود", "يوسف", "الرعد", "إبراهيم", "الحجر", "النحل", "الإسراء", "الكهف", "مريم", "طه",
@@ -69,27 +68,31 @@ function getSurahUrl(surahIndex, reciter) {
 
 function playSurahStream(surahIndex, reciter) {
     const url = getSurahUrl(surahIndex, reciter);
-    console.log(`▶️ جاري تشغيل الرابط: ${url}`);
+    console.log(`▶️ جاري تشغيل الرابط عبر OggOpus: ${url}`);
 
     if (currentFFmpegProcess) {
         try { currentFFmpegProcess.kill('SIGKILL'); } catch (e) {}
         currentFFmpegProcess = null;
     }
 
+    // تشغيل FFmpeg مع التشفير المباشر لـ Opus لضمان خروج الصوت 100%
     currentFFmpegProcess = spawn(ffmpegPath, [
         '-reconnect', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '5',
+        '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         '-i', url,
         '-filter:a', `volume=${volume}`,
-        '-f', 's16le',
+        '-c:a', 'libopus',
+        '-b:a', '96k',
         '-ar', '48000',
         '-ac', '2',
+        '-f', 'ogg',
         'pipe:1'
     ], { stdio: ['ignore', 'pipe', 'ignore'] });
 
     currentResource = createAudioResource(currentFFmpegProcess.stdout, { 
-        inputType: StreamType.Raw
+        inputType: StreamType.OggOpus
     });
 
     player.play(currentResource);
@@ -183,7 +186,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'setup-quran') {
         const voiceChannel = interaction.options.getChannel('channel');
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         if (panelMessageData.channelId && panelMessageData.messageId) {
             try {
@@ -193,7 +196,12 @@ client.on('interactionCreate', async (interaction) => {
             } catch (e) {}
         }
 
-        // إنشاء الاتصال مع selfDeaf: true لحل تعليق ديسكورد نهائياً
+        // تنظيف أي اتصال قديم معلق
+        const oldConn = getVoiceConnection(voiceChannel.guild.id);
+        if (oldConn) {
+            oldConn.destroy();
+        }
+
         connection = joinVoiceChannel({
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
@@ -205,12 +213,9 @@ client.on('interactionCreate', async (interaction) => {
         // ربط المشغل فوراً
         connection.subscribe(player);
 
-        try {
-            await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
-            console.log("✅ الاتصال بالروم الصوتية متصل وجاهز فوراً!");
-        } catch (error) {
-            console.log("⚠️ تم تجاوز المهلة وتم الاتصال في الخلفية.");
-        }
+        connection.on('stateChange', (oldState, newState) => {
+            console.log(`📡 حالة الاتصال: ${oldState.status} ➔ ${newState.status}`);
+        });
 
         const panelMsg = await voiceChannel.send(createPanelEmbed());
         panelMessageData = { channelId: voiceChannel.id, messageId: panelMsg.id };
@@ -219,7 +224,7 @@ client.on('interactionCreate', async (interaction) => {
         isCustomRequest = false;
         playSurahStream(mainSurahIndex, mainReciter);
 
-        return interaction.editReply({ content: `✅ تم ربط البوت بـ **${voiceChannel.name}** وبدأت الختمة المستمرة من سورة الفاتحة!` });
+        return interaction.editReply({ content: `✅ تم ربط البوت بـ **${voiceChannel.name}** وبدأت الإذاعة مباشرة!` });
     }
 
     if (interaction.isButton()) {
@@ -322,13 +327,13 @@ client.on('interactionCreate', async (interaction) => {
             await updatePanelMessage();
             await interaction.reply({ 
                 content: `▶️ تم تشغيل سورة **${surahNames[customSurahIndex - 1]}** بصوت **${customReciter.name}** كطلب خاص. ستستأنف الختمة تلقائياً بعد انتهائها!`, 
-                ephemeral: true 
+                flags: MessageFlags.Ephemeral 
             });
         } else {
-            await interaction.reply({ content: `❌ لم يتم العثور على سورة بهذا الاسم: "${rawInput}"`, ephemeral: true });
+            await interaction.reply({ content: `❌ لم يتم العثور على سورة بهذا الاسم: "${rawInput}"`, flags: MessageFlags.Ephemeral });
         }
     }
 });
 
 client.login(process.env.BOT_TOKEN);
-                                
+                                              
