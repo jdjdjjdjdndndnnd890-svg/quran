@@ -1,4 +1,3 @@
-// تحديد مسار FFmpeg الصريح لبيئة Railway
 const ffmpegPath = require('ffmpeg-static');
 process.env.FFMPEG_PATH = ffmpegPath;
 
@@ -9,7 +8,7 @@ const {
 } = require('discord.js');
 const { 
     joinVoiceChannel, createAudioPlayer, createAudioResource, 
-    AudioPlayerStatus, VoiceConnectionStatus, entersState 
+    AudioPlayerStatus, VoiceConnectionStatus, entersState, StreamType 
 } = require('@discordjs/voice');
 
 const client = new Client({
@@ -61,11 +60,15 @@ function getSurahUrl(surahIndex, reciter) {
     return `${reciter.url}${formattedIndex}.mp3`;
 }
 
+// تشغيل الصوت مع تحويل الصيغة عبر FFmpeg
 function playSurah(index) {
     currentSurahIndex = index;
     const url = getSurahUrl(currentSurahIndex, currentReciter);
     
-    currentResource = createAudioResource(url, { inlineVolume: true });
+    currentResource = createAudioResource(url, { 
+        inputType: StreamType.Arbitrary,
+        inlineVolume: true 
+    });
     currentResource.volume.setVolume(volume);
     
     player.play(currentResource);
@@ -155,6 +158,7 @@ client.on('interactionCreate', async (interaction) => {
         const voiceChannel = interaction.options.getChannel('channel');
         await interaction.deferReply({ ephemeral: true });
 
+        // حذف البانل القديمة إن وجدت
         if (panelMessageData.channelId && panelMessageData.messageId) {
             try {
                 const oldChannel = await client.channels.fetch(panelMessageData.channelId);
@@ -163,29 +167,30 @@ client.on('interactionCreate', async (interaction) => {
             } catch (e) {}
         }
 
+        // الاتصال بالروم مع تفعيل selfDeaf
         connection = joinVoiceChannel({
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
             adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-            selfDeaf: false,
+            selfDeaf: true,
             selfMute: false
         });
 
-        // الانتظار لحين اكتمال الاتصال بالروم الصوتية
         try {
-            await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+            await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
         } catch (error) {
             console.error("فشل الاتصال بالروم الصوتية:", error);
         }
 
         connection.subscribe(player);
 
-        const panelMsg = await voiceChannel.send(createPanelEmbed());
-        panelMessageData = { channelId: voiceChannel.id, messageId: panelMsg.id };
+        // إرسال البانل الدائمة في الشات الحالي
+        const panelMsg = await interaction.channel.send(createPanelEmbed());
+        panelMessageData = { channelId: interaction.channel.id, messageId: panelMsg.id };
 
         playSurah(currentSurahIndex);
 
-        return interaction.editReply({ content: `✅ تم ربط البوت بـ **${voiceChannel.name}** وإرسال البانل بنجاح!` });
+        return interaction.editReply({ content: `✅ تم دخول **${voiceChannel.name}** وتم تثبيت البانل بنجاح!` });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_reciter') {
@@ -306,4 +311,4 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.BOT_TOKEN);
-          
+            
