@@ -1,3 +1,8 @@
+// تحديد مسار FFmpeg لضمان تشغيل الصوت على Railway و Linux
+const ffmpegPath = require('ffmpeg-static');
+process.env.FFMPEG_PATH = ffmpegPath;
+
+const https = require('https');
 const { 
     Client, GatewayIntentBits, SlashCommandBuilder, ActionRowBuilder, 
     ButtonBuilder, ButtonStyle, EmbedBuilder, ModalBuilder, TextInputBuilder, 
@@ -5,10 +10,9 @@ const {
 } = require('discord.js');
 const { 
     joinVoiceChannel, createAudioPlayer, createAudioResource, 
-    AudioPlayerStatus, VoiceConnectionStatus 
+    AudioPlayerStatus 
 } = require('@discordjs/voice');
 
-// إنشاء العميل وتحديد الصلاحيات (Intents)
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -17,19 +21,19 @@ const client = new Client({
     ]
 });
 
-// قائمة القراء المتاحين في البانل
+// قائمة القراء المتاحين
 const reciters = [
-    { id: 'afs', name: 'مشاري العفاسي', url: 'https://server8.mp3quran.net/afs/' },
-    { id: 'dosr', name: 'ياسر الدوسري', url: 'https://server11.mp3quran.net/dosr/' },
-    { id: 'minsh', name: 'محمد صديق المنشاوي (مجود)', url: 'https://server10.mp3quran.net/minsh/' },
-    { id: 'shat', name: 'أبو بكر الشاطري', url: 'https://server11.mp3quran.net/shat/' },
-    { id: 'shur', name: 'سعود الشريم', url: 'https://server7.mp3quran.net/shur/' },
-    { id: 'sds', name: 'عبد الرحمن السديس', url: 'https://server11.mp3quran.net/sds/' },
-    { id: 'ajm', name: 'أحمد العجمي', url: 'https://server10.mp3quran.net/ajm/' },
-    { id: 'maher', name: 'ماهر المعيقلي', url: 'https://server12.mp3quran.net/maher/' }
+    { id: 'afs', name: 'مشاري العفاسي', keywords: ['عفاسي', 'مشاري'], url: 'https://server8.mp3quran.net/afs/' },
+    { id: 'dosr', name: 'ياسر الدوسري', keywords: ['دوسري', 'ياسر'], url: 'https://server11.mp3quran.net/dosr/' },
+    { id: 'minsh', name: 'محمد صديق المنشاوي', keywords: ['منشاوي', 'منش'], url: 'https://server10.mp3quran.net/minsh/' },
+    { id: 'shat', name: 'أبو بكر الشاطري', keywords: ['شاطري', 'شاطر'], url: 'https://server11.mp3quran.net/shat/' },
+    { id: 'shur', name: 'سعود الشريم', keywords: ['شريم', 'سعود'], url: 'https://server7.mp3quran.net/shur/' },
+    { id: 'sds', name: 'عبد الرحمن السديس', keywords: ['سديس', 'عبدالرحمن'], url: 'https://server11.mp3quran.net/sds/' },
+    { id: 'ajm', name: 'أحمد العجمي', keywords: ['عجمي', 'احمد'], url: 'https://server10.mp3quran.net/ajm/' },
+    { id: 'maher', name: 'ماهر المعيقلي', keywords: ['معيقلي', 'ماهر'], url: 'https://server12.mp3quran.net/maher/' }
 ];
 
-// قائمة أسماء السور (114 سورة)
+// أسماء السور (114 سورة)
 const surahNames = [
     "الفاتحة", "البقرة", "آل عمران", "النساء", "المائدة", "الأنعام", "الأعراف", "الأنفال", "التوبة", "يونس",
     "هود", "يوسف", "الرعد", "إبراهيم", "الحجر", "النحل", "الإسراء", "الكهف", "مريم", "طه",
@@ -45,36 +49,48 @@ const surahNames = [
     "المسد", "الإخلاص", "الفلق", "الناس"
 ];
 
-// متغيرات حالة البوت
 let currentSurahIndex = 1;
-let currentReciter = reciters[0]; // الشغال افتراضياً: العفاسي
+let currentReciter = reciters[0];
 let volume = 1.0;
 let connection = null;
 const player = createAudioPlayer();
 let currentResource = null;
 let panelMessageData = { channelId: null, messageId: null };
 
-// رابط السورة المباشر
 function getSurahUrl(surahIndex, reciter) {
     const formattedIndex = String(surahIndex).padStart(3, '0');
     return `${reciter.url}${formattedIndex}.mp3`;
 }
 
-// تشغيل السورة
+// تشغيل السورة بأسلوب البث المباشر المضمون للصوت
 function playSurah(index) {
     currentSurahIndex = index;
     const url = getSurahUrl(currentSurahIndex, currentReciter);
     
-    currentResource = createAudioResource(url, { inlineVolume: true });
-    currentResource.volume.setVolume(volume);
-    
-    player.play(currentResource);
+    https.get(url, (stream) => {
+        currentResource = createAudioResource(stream, { inlineVolume: true });
+        currentResource.volume.setVolume(volume);
+        player.play(currentResource);
+    }).on('error', (err) => {
+        console.error("خطأ في تشغيل رابط الصوت:", err.message);
+    });
 }
 
-// بناء وتصميم البانل التفاعلي
+// تنظيف النصوص للبحث الدقيق
+function normalizeText(text) {
+    return text
+        .replace(/[أإآ]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/[\u064B-\u0652]/g, '') // إزالة التشكيل
+        .toLowerCase()
+        .trim();
+}
+
+// تصميم البانل الجديد (رمادي بالكامل + إيموجيات فقط)
 function createPanelEmbed() {
     const embed = new EmbedBuilder()
-        .setColor('#1f8b4c')
+        .setColor('#2b2d31')
         .setTitle('📖 إذاعة القرآن الكريم - 24/7')
         .addFields(
             { name: '🎙️ القارئ الحالي', value: `**${currentReciter.name}**`, inline: true },
@@ -83,10 +99,9 @@ function createPanelEmbed() {
         )
         .setFooter({ text: 'البوت يعمل باستمرار 24/7 بدون توقف' });
 
-    // قائمة اختيار الشيوخ
     const reciterSelect = new StringSelectMenuBuilder()
         .setCustomId('select_reciter')
-        .setPlaceholder('اختر الشيخ من هنا...')
+        .setPlaceholder('اختر القارئ (الشيخ) من هنا...')
         .addOptions(
             reciters.map(r => ({
                 label: r.name,
@@ -97,30 +112,24 @@ function createPanelEmbed() {
 
     const rowReciter = new ActionRowBuilder().addComponents(reciterSelect);
 
-    // أزرار التنقل والبحث
-    const rowControls = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('btn_prev').setLabel('⏮️ السورة السابقة').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('btn_search').setLabel('🔍 بحث عن سورة').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('btn_next').setLabel('السورة التالية ⏭️').setStyle(ButtonStyle.Primary)
+    // صف الأزرار (كلها رمادية وبدون كلام - إيموجي فقط)
+    const rowButtons = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('btn_prev').setEmoji('⏮️').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('btn_search').setEmoji('🔍').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('btn_next').setEmoji('⏭️').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('btn_vol_down').setEmoji('🔉').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('btn_vol_up').setEmoji('🔊').setStyle(ButtonStyle.Secondary)
     );
 
-    // أزرار التحكم بالصوت
-    const rowVolume = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('btn_vol_down').setLabel('🔉 توطية الصوت').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('btn_vol_up').setLabel('🔊 تعلية الصوت').setStyle(ButtonStyle.Secondary)
-    );
-
-    return { embeds: [embed], components: [rowReciter, rowControls, rowVolume] };
+    return { embeds: [embed], components: [rowReciter, rowButtons] };
 }
 
-// حلقة التكرار المستمرة 24/7 (عند انتهاء السورة)
 player.on(AudioPlayerStatus.Idle, () => {
-    currentSurahIndex = (currentSurahIndex % 114) + 1; // السورة التالية أوتوماتيك
+    currentSurahIndex = (currentSurahIndex % 114) + 1;
     playSurah(currentSurahIndex);
     updatePanelMessage();
 });
 
-// تحديث رسالة البانل
 async function updatePanelMessage() {
     if (!panelMessageData.channelId || !panelMessageData.messageId) return;
     try {
@@ -128,11 +137,10 @@ async function updatePanelMessage() {
         const msg = await channel.messages.fetch(panelMessageData.messageId);
         await msg.edit(createPanelEmbed());
     } catch (err) {
-        console.log("خطأ في تحديث البانل:", err.message);
+        console.log("تعذر تحديث البانل:", err.message);
     }
 }
 
-// عند تشغيل البوت وتجهيز الأوامر
 client.on('ready', async () => {
     console.log(`🤖 تم تشغيل البوت بنجاح باسم: ${client.user.tag}`);
 
@@ -149,7 +157,6 @@ client.on('ready', async () => {
     await client.application.commands.set([setupCommand]);
 });
 
-// التعامل مع جميع الأوامر والأزرار والبحث
 client.on('interactionCreate', async (interaction) => {
 
     // 1. أمر Setup
@@ -157,36 +164,32 @@ client.on('interactionCreate', async (interaction) => {
         const voiceChannel = interaction.options.getChannel('channel');
         await interaction.deferReply({ ephemeral: true });
 
-        // مسح البانل القديمة لو كانت موجودة في روم تانية
         if (panelMessageData.channelId && panelMessageData.messageId) {
             try {
                 const oldChannel = await client.channels.fetch(panelMessageData.channelId);
                 const oldMsg = await oldChannel.messages.fetch(panelMessageData.messageId);
                 await oldMsg.delete();
-            } catch (e) { /* مسحوبة بالفعل أو مش موجودة */ }
+            } catch (e) {}
         }
 
-        // الانضمام للروم الصوتية
         connection = joinVoiceChannel({
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
             adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+            selfDeaf: false
         });
 
         connection.subscribe(player);
 
-        // إرسال البانل في شات الروم الصوتية
         const panelMsg = await voiceChannel.send(createPanelEmbed());
         panelMessageData = { channelId: voiceChannel.id, messageId: panelMsg.id };
 
-        if (player.state.status !== AudioPlayerStatus.Playing) {
-            playSurah(currentSurahIndex);
-        }
+        playSurah(currentSurahIndex);
 
         return interaction.editReply({ content: `✅ تم ربط البوت بـ **${voiceChannel.name}** وإرسال البانل بنجاح!` });
     }
 
-    // 2. تغيير القارئ من القائمة
+    // 2. اختيار القارئ
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_reciter') {
         await interaction.deferUpdate();
         const selectedId = interaction.values[0];
@@ -204,13 +207,13 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.customId === 'btn_search') {
             const modal = new ModalBuilder()
                 .setCustomId('search_modal')
-                .setTitle('🔍 اختيار سورة معينة');
+                .setTitle('🔍 اختيار سورة أو قارئ');
 
             const surahInput = new TextInputBuilder()
                 .setCustomId('surah_input')
-                .setLabel("اكتب اسم السورة أو رقمها (1-114)")
+                .setLabel("اكتب اسم السورة أو رقمها (وممكن اسم الشيخ)")
                 .setStyle(TextInputStyle.Short)
-                .setPlaceholder("مثال: البقرة أو 2")
+                .setPlaceholder("مثال: الرحمن بصوت ياسر الدوسري")
                 .setRequired(true);
 
             const row = new ActionRowBuilder().addComponents(surahInput);
@@ -240,29 +243,79 @@ client.on('interactionCreate', async (interaction) => {
         await updatePanelMessage();
     }
 
-    // 4. إدخال اسم السورة في نافذة البحث
+    // 4. معالجة البحث الذكي (Modal)
     if (interaction.isModalSubmit() && interaction.customId === 'search_modal') {
-        const query = interaction.fields.getTextInputValue('surah_input').trim();
+        let rawInput = interaction.fields.getTextInputValue('surah_input');
+        let normInput = normalizeText(rawInput);
+
+        // أولاً: فحص إذا كان المستخدم ذكر اسم شيخ في البحث
+        let matchedReciter = null;
+        for (const rec of reciters) {
+            for (const kw of rec.keywords) {
+                if (normInput.includes(normalizeText(kw))) {
+                    matchedReciter = rec;
+                    break;
+                }
+            }
+            if (matchedReciter) break;
+        }
+
+        if (matchedReciter) {
+            currentReciter = matchedReciter;
+        }
+
+        // ثانياً: تنظيف النص للبحث عن اسم السورة بالظبط
+        let cleanForSurah = normInput
+            .replace(/سوره|سوره|بصوت|صوت|الشيخ|قارئ|القارئ/g, '')
+            .trim();
+
+        // إزالة اسم الشيخ من نص بحث السورة إن وجد
+        if (matchedReciter) {
+            matchedReciter.keywords.forEach(kw => {
+                cleanForSurah = cleanForSurah.replace(normalizeText(kw), '');
+            });
+            cleanForSurah = cleanForSurah.trim();
+        }
+
         let foundIndex = -1;
 
-        if (!isNaN(query)) {
-            const num = parseInt(query);
+        // البحث بالرقم
+        const numberMatch = cleanForSurah.match(/\d+/);
+        if (numberMatch) {
+            const num = parseInt(numberMatch[0]);
             if (num >= 1 && num <= 114) foundIndex = num;
-        } else {
-            const index = surahNames.findIndex(s => s.includes(query) || query.includes(s));
-            if (index !== -1) foundIndex = index + 1;
+        }
+
+        // البحث بالاسم
+        if (foundIndex === -1 && cleanForSurah.length > 0) {
+            // 1. بحث عن مطابقة تامة أولاً
+            let exactIdx = surahNames.findIndex(s => normalizeText(s) === cleanForSurah);
+            if (exactIdx !== -1) {
+                foundIndex = exactIdx + 1;
+            } else {
+                // 2. بحث يحتوي على الكلمة
+                let partialIdx = surahNames.findIndex(s => normalizeText(s).includes(cleanForSurah) || cleanForSurah.includes(normalizeText(s)));
+                if (partialIdx !== -1) foundIndex = partialIdx + 1;
+            }
+        }
+
+        // لو ما لاقاش سورة محددة بس لقى شيخ، يشغل نفس السورة الحالية بالشيخ الجديد
+        if (foundIndex === -1 && matchedReciter) {
+            foundIndex = currentSurahIndex;
         }
 
         if (foundIndex !== -1) {
             playSurah(foundIndex);
             await updatePanelMessage();
-            await interaction.reply({ content: `▶️ جاري تشغيل سورة **${surahNames[foundIndex - 1]}** بصوت **${currentReciter.name}**`, ephemeral: true });
+            await interaction.reply({ 
+                content: `▶️ جاري تشغيل سورة **${surahNames[foundIndex - 1]}** بصوت **${currentReciter.name}**`, 
+                ephemeral: true 
+            });
         } else {
-            await interaction.reply({ content: `❌ لم يتم العثور على سورة باسم أو رقم "${query}"`, ephemeral: true });
+            await interaction.reply({ content: `❌ لم يتم العثور على سورة باسم "${rawInput}"`, ephemeral: true });
         }
     }
 });
 
-// قراءة التوكن من Variables على Railway
 client.login(process.env.BOT_TOKEN);
-  
+                                                               
