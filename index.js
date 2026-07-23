@@ -32,7 +32,7 @@ const reciters = [
     { id: 'maher', name: 'ماهر المعيقلي', keywords: ['معيقلي', 'ماهر'], url: 'https://server12.mp3quran.net/maher/' }
 ];
 
-// قائمة أسماء السور (114)
+// أسماء السور (114 سورة)
 const surahNames = [
     "الفاتحة", "البقرة", "آل عمران", "النساء", "المائدة", "الأنعام", "الأعراف", "الأنفال", "التوبة", "يونس",
     "هود", "يوسف", "الرعد", "إبراهيم", "الحجر", "النحل", "الإسراء", "الكهف", "مريم", "طه",
@@ -48,11 +48,11 @@ const surahNames = [
     "المسد", "الإخلاص", "الفلق", "الناس"
 ];
 
-// متغيرات التتبع والختمة
-let mainSurahIndex = 1;        // السورة الحالية في الختمة الافتراضية
-let mainReciter = reciters[0];  // القارئ الافتراضي للختمة
+// متغيرات الختمة 24/7 والطلبات الخاصة
+let mainSurahIndex = 1;         // يبدأ تلقائياً من سورة الفاتحة
+let mainReciter = reciters[0];   // القارئ الافتراضي للختمة
 
-let isCustomRequest = false;    // هل شغال سورة بطلب خاص الآن؟
+let isCustomRequest = false;     // هل شغال طلب خاص حالياً؟
 let customSurahIndex = null;
 let customReciter = null;
 
@@ -68,6 +68,7 @@ function getSurahUrl(surahIndex, reciter) {
     return `${reciter.url}${formattedIndex}.mp3`;
 }
 
+// تحويل البث المباشر إلى Ogg Opus عبر FFmpeg مباشرة
 function playSurahStream(surahIndex, reciter) {
     const url = getSurahUrl(surahIndex, reciter);
 
@@ -83,9 +84,12 @@ function playSurahStream(surahIndex, reciter) {
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '5',
         '-i', url,
-        '-f', 's16le',
+        '-filter:a', `volume=${volume}`,
+        '-c:a', 'libopus',
+        '-b:a', '96k',
         '-ar', '48000',
         '-ac', '2',
+        '-f', 'ogg',
         '-loglevel', 'error',
         'pipe:1'
     ], { stdio: ['ignore', 'pipe', 'ignore'] });
@@ -95,13 +99,8 @@ function playSurahStream(surahIndex, reciter) {
     });
 
     currentResource = createAudioResource(currentFFmpegProcess.stdout, { 
-        inputType: StreamType.Raw,
-        inlineVolume: true 
+        inputType: StreamType.OggOpus
     });
-
-    if (currentResource.volume) {
-        currentResource.volume.setVolume(volume);
-    }
 
     player.play(currentResource);
 }
@@ -142,15 +141,15 @@ function createPanelEmbed() {
     return { embeds: [embed], components: [rowButtons] };
 }
 
-// لما السورة تخلص
+// انتهاء السورة
 player.on(AudioPlayerStatus.Idle, () => {
     if (isCustomRequest) {
-        // انتهى الطلب الخاص -> نرجع للختمة الافتراضية من المكان الموقوف عنده
+        // انتهى الطلب الخاص -> الرجوع للختمة المستمرة من نفس مكان توقفها
         isCustomRequest = false;
         customSurahIndex = null;
         customReciter = null;
     } else {
-        // الختمة المستمرة تقدم سورة للأمام
+        // الختمة الافتراضية تتقدم سورة للأمام
         mainSurahIndex = (mainSurahIndex % 114) + 1;
     }
 
@@ -219,11 +218,11 @@ client.on('interactionCreate', async (interaction) => {
 
         connection.subscribe(player);
 
-        // إرسال البانل في شات الروم الصوتية
+        // إرسال البانل في شات الروم الصوتية مباشرة (Text-In-Voice)
         const panelMsg = await voiceChannel.send(createPanelEmbed());
         panelMessageData = { channelId: voiceChannel.id, messageId: panelMsg.id };
 
-        // البدء من سورة الفاتحة (1)
+        // البدء فوراً من سورة الفاتحة (1)
         mainSurahIndex = 1;
         isCustomRequest = false;
         playSurahStream(mainSurahIndex, mainReciter);
@@ -269,11 +268,15 @@ client.on('interactionCreate', async (interaction) => {
         } 
         else if (interaction.customId === 'btn_vol_up') {
             volume = Math.min(volume + 0.1, 2.0);
-            if (currentResource && currentResource.volume) currentResource.volume.setVolume(volume);
+            const activeIndex = isCustomRequest ? customSurahIndex : mainSurahIndex;
+            const activeReciter = isCustomRequest ? customReciter : mainReciter;
+            playSurahStream(activeIndex, activeReciter);
         } 
         else if (interaction.customId === 'btn_vol_down') {
             volume = Math.max(volume - 0.1, 0.0);
-            if (currentResource && currentResource.volume) currentResource.volume.setVolume(volume);
+            const activeIndex = isCustomRequest ? customSurahIndex : mainSurahIndex;
+            const activeReciter = isCustomRequest ? customReciter : mainReciter;
+            playSurahStream(activeIndex, activeReciter);
         }
 
         await updatePanelMessage();
@@ -341,4 +344,3 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.BOT_TOKEN);
-    
